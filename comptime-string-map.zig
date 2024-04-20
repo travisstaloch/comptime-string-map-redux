@@ -40,10 +40,12 @@ pub fn ComptimeStringMapWithEql(
     comptime eql: fn (a: []const u8, b: []const u8) bool,
 ) type {
     return struct {
-        sorted_kvs: []const KV = &.{},
-        len_indexes: []const usize = &.{},
-        min_len: usize = std.math.maxInt(usize),
-        max_len: usize = 0,
+        sorted_kvs: [*]const KV = undefined,
+        len_indexes: [*]const u32 = undefined,
+        sorted_kvs_len: u32 = 0,
+        len_indexes_len: u32 = 0,
+        min_len: u32 = std.math.maxInt(u32),
+        max_len: u32 = 0,
 
         pub const KV = struct {
             key: []const u8,
@@ -64,11 +66,13 @@ pub fn ComptimeStringMapWithEql(
                 self.initSortedKVs(kvs_list, &sorted_kvs);
                 const kvs = sorted_kvs;
                 self.sorted_kvs = &kvs;
+                self.sorted_kvs_len = @intCast(sorted_kvs.len);
 
-                var len_indexes: [self.max_len + 1]usize = undefined;
+                var len_indexes: [self.max_len + 1]u32 = undefined;
                 self.initLenIndexes(&len_indexes);
                 const lis = len_indexes;
                 self.len_indexes = &lis;
+                self.len_indexes_len = @intCast(len_indexes.len);
                 return self;
             }
         }
@@ -80,20 +84,22 @@ pub fn ComptimeStringMapWithEql(
                 return self;
 
             const sorted_kvs = try allocator.alloc(KV, kvs_list.len);
-            errdefer allocator.free(self.sorted_kvs);
+            errdefer allocator.free(sorted_kvs);
             self.initSortedKVs(kvs_list, sorted_kvs);
-            self.sorted_kvs = sorted_kvs;
+            self.sorted_kvs = sorted_kvs.ptr;
+            self.sorted_kvs_len = @intCast(sorted_kvs.len);
 
-            const len_indexes = try allocator.alloc(usize, self.max_len + 1);
+            const len_indexes = try allocator.alloc(u32, self.max_len + 1);
             self.initLenIndexes(len_indexes);
-            self.len_indexes = len_indexes;
+            self.len_indexes = len_indexes.ptr;
+            self.len_indexes_len = @intCast(len_indexes.len);
             return self;
         }
 
         /// this method should only be used with initRuntime() and not with init().
         pub fn deinit(self: Self, allocator: mem.Allocator) void {
-            allocator.free(self.len_indexes);
-            allocator.free(self.sorted_kvs);
+            allocator.free(self.len_indexes[0..self.len_indexes_len]);
+            allocator.free(self.sorted_kvs[0..self.sorted_kvs_len]);
         }
 
         const SortContext = struct {
@@ -114,15 +120,15 @@ pub fn ComptimeStringMapWithEql(
                     .{ .key = kv.@"0", .value = {} }
                 else
                     .{ .key = kv.@"0", .value = kv.@"1" };
-                self.min_len = @min(self.min_len, kv.@"0".len);
-                self.max_len = @max(self.max_len, kv.@"0".len);
+                self.min_len = @intCast(@min(self.min_len, kv.@"0".len));
+                self.max_len = @intCast(@max(self.max_len, kv.@"0".len));
             }
             mem.sortUnstableContext(0, sorted_kvs.len, SortContext{ .kvs = sorted_kvs });
         }
 
-        fn initLenIndexes(self: Self, len_indexes: []usize) void {
+        fn initLenIndexes(self: Self, len_indexes: []u32) void {
             var len: usize = 0;
-            var i: usize = 0;
+            var i: u32 = 0;
             while (len <= self.max_len) : (len += 1) {
                 // find the first keyword len == len
                 while (len > self.sorted_kvs[i].key.len) {
@@ -133,20 +139,20 @@ pub fn ComptimeStringMapWithEql(
         }
 
         /// Checks if the map has a value for the key.
-        pub fn has(self: *const Self, str: []const u8) bool {
+        pub fn has(self: Self, str: []const u8) bool {
             return self.get(str) != null;
         }
 
         /// Returns the value for the key if any, else null.
-        pub fn get(self: *const Self, str: []const u8) ?V {
-            if (self.sorted_kvs.len == 0)
+        pub fn get(self: Self, str: []const u8) ?V {
+            if (self.sorted_kvs_len == 0)
                 return null;
 
             return self.sorted_kvs[self.getIndex(str) orelse return null].value;
         }
 
-        pub fn getIndex(self: *const Self, str: []const u8) ?usize {
-            if (self.sorted_kvs.len == 0)
+        pub fn getIndex(self: Self, str: []const u8) ?usize {
+            if (self.sorted_kvs_len == 0)
                 return null;
 
             if (str.len < self.min_len or str.len > self.max_len)
@@ -160,22 +166,22 @@ pub fn ComptimeStringMapWithEql(
                 if (eql(kv.key, str))
                     return i;
                 i += 1;
-                if (i >= self.sorted_kvs.len)
+                if (i >= self.sorted_kvs_len)
                     return null;
             }
         }
 
         /// Returns the longest partially matching key, value pair for `str`
         /// else null.  A partial match means that `str` starts with key.
-        pub fn getPartial(self: *const Self, str: []const u8) ?KV {
-            if (self.sorted_kvs.len == 0)
+        pub fn getPartial(self: Self, str: []const u8) ?KV {
+            if (self.sorted_kvs_len == 0)
                 return null;
 
             return self.sorted_kvs[self.getIndexPartial(str) orelse return null];
         }
 
-        pub fn getIndexPartial(self: *const Self, str: []const u8) ?usize {
-            if (self.sorted_kvs.len == 0)
+        pub fn getIndexPartial(self: Self, str: []const u8) ?usize {
+            if (self.sorted_kvs_len == 0)
                 return null;
 
             if (str.len < self.min_len)
