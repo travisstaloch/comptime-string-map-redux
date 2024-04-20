@@ -1,22 +1,21 @@
 #!/bin/bash
 
-num=1000000
 poop=../poop/zig-out/bin/poop
+num=$((1000*1000))
+
 set -xe
+rm -rf zig-out/
 
-opt=Debug
-zig build-exe bench.zig -O$opt
-$poop "./bench std $num" "./bench rev $num"
+function bench() {
+  zig build -Doptimize=$1 -Dmode=rev -Dnum-iters=$num
+  cp zig-out/bin/bench zig-out/bin/bench-rev
+  zig build -Doptimize=$1 -Dmode=std -Dnum-iters=$num
+  cp zig-out/bin/bench zig-out/bin/bench-std
+  
+  $poop -d 3000 "zig-out/bin/bench-std" "zig-out/bin/bench-rev"
+}
 
-opt=ReleaseSafe
-zig build-exe bench.zig -O$opt
-$poop "./bench std $num" "./bench rev $num"
-
-opt=ReleaseSmall
-zig build-exe bench.zig -O$opt
-$poop "./bench std $num" "./bench rev $num"
-
-opt=ReleaseFast
-zig build-exe bench.zig -O$opt
-$poop "./bench std $num" "./bench rev $num"
-
+bench Debug
+bench ReleaseSafe
+bench ReleaseSmall
+bench ReleaseFast
