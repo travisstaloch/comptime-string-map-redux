@@ -133,19 +133,19 @@ pub fn ComptimeStringMapWithEql(
         }
 
         /// Checks if the map has a value for the key.
-        pub fn has(self: Self, str: []const u8) bool {
+        pub fn has(self: *const Self, str: []const u8) bool {
             return self.get(str) != null;
         }
 
         /// Returns the value for the key if any, else null.
-        pub fn get(self: Self, str: []const u8) ?V {
+        pub fn get(self: *const Self, str: []const u8) ?V {
             if (self.sorted_kvs.len == 0)
                 return null;
 
             return self.sorted_kvs[self.getIndex(str) orelse return null].value;
         }
 
-        pub fn getIndex(self: Self, str: []const u8) ?usize {
+        pub fn getIndex(self: *const Self, str: []const u8) ?usize {
             if (self.sorted_kvs.len == 0)
                 return null;
 
@@ -167,14 +167,14 @@ pub fn ComptimeStringMapWithEql(
 
         /// Returns the longest partially matching key, value pair for `str`
         /// else null.  A partial match means that `str` starts with key.
-        pub fn getPartial(self: Self, str: []const u8) ?KV {
+        pub fn getPartial(self: *const Self, str: []const u8) ?KV {
             if (self.sorted_kvs.len == 0)
                 return null;
 
             return self.sorted_kvs[self.getIndexPartial(str) orelse return null];
         }
 
-        pub fn getIndexPartial(self: Self, str: []const u8) ?usize {
+        pub fn getIndexPartial(self: *const Self, str: []const u8) ?usize {
             if (self.sorted_kvs.len == 0)
                 return null;
 
