@@ -44,7 +44,7 @@ fn validate(comptime num_kvs: usize, num_iters: usize) !void {
     @setEvalBranchQuota(num_kvs * 100);
     const kvs_list = kvs[0..num_kvs];
     const map1 = std.ComptimeStringMap(V, kvs_list);
-    const map2 = ctmap.ComptimeStringMap(V).init(kvs_list);
+    const map2 = ctmap.StaticStringMap(V).initComptime(kvs_list);
 
     for (0..num_iters) |i| {
         // intentionally sample kvs[0..num_kvs * 2], not just kvs_list, so that
@@ -65,7 +65,7 @@ fn bench(comptime mode: Mode, comptime num_kvs: usize, num_iters: usize) void {
     const map = comptime if (mode == .std)
         std.ComptimeStringMap(V, kvs_list)
     else
-        ctmap.ComptimeStringMap(V).init(kvs_list);
+        ctmap.StaticStringMap(V).initComptime(kvs_list);
 
     // var timer = try std.time.Timer.start();
     // var misses: usize = 0;

@@ -1,11 +1,11 @@
 const std = @import("std");
 const mem = std.mem;
 
-/// Comptime string map optimized for small sets of disparate string keys.
+/// Static string map optimized for small sets of disparate string keys.
 /// Works by separating the keys by length at initialization and only checking
 /// strings of equal length at runtime.
-pub fn ComptimeStringMap(comptime V: type) type {
-    return ComptimeStringMapWithEql(V, defaultEql);
+pub fn StaticStringMap(comptime V: type) type {
+    return StaticStringMapWithEql(V, defaultEql);
 }
 
 /// Like `std.mem.eql`, but takes advantage of the fact that the lengths
@@ -28,16 +28,16 @@ pub fn eqlAsciiIgnoreCase(a: []const u8, b: []const u8) bool {
     return true;
 }
 
-/// ComptimeStringMap, but accepts an equality function (`eql`).
+/// StaticStringMap, but accepts an equality function (`eql`).
 /// The `eql` function is only called to determine the equality
 /// of equal length strings. Any strings that are not equal length
 /// are never compared using the `eql` function.
-pub fn ComptimeStringMapWithEql(
+pub fn StaticStringMapWithEql(
     comptime V: type,
     comptime eql: fn (a: []const u8, b: []const u8) bool,
 ) type {
     return struct {
-        sorted_kvs: *const KVs = &empty_kvs,
+        kvs: *const KVs = &empty_kvs,
         len_indexes: [*]const u32 = &empty_len_indexes,
         len_indexes_len: u32 = 0,
         min_len: u32 = std.math.maxInt(u32),
@@ -52,7 +52,7 @@ pub fn ComptimeStringMapWithEql(
         const KVs = struct {
             keys: [*]const []const u8,
             values: [*]const V,
-            len: usize,
+            len: u32,
         };
         const empty_kvs = KVs{
             .keys = &empty_keys,
@@ -68,56 +68,56 @@ pub fn ComptimeStringMapWithEql(
         /// `kvs_list` must be either a list of `struct { []const u8, V }`
         /// (key-value pair) tuples, or a list of `struct { []const u8 }`
         /// (only keys) tuples if `V` is `void`.
-        pub inline fn init(comptime kvs_list: anytype) Self {
+        pub inline fn initComptime(comptime kvs_list: anytype) Self {
             comptime {
-                @setEvalBranchQuota(1500);
+                @setEvalBranchQuota(30 * kvs_list.len);
                 var self = Self{};
                 if (kvs_list.len == 0)
                     return self;
 
-                var keys: [kvs_list.len][]const u8 = undefined;
-                var vals: [kvs_list.len]V = undefined;
+                var sorted_keys: [kvs_list.len][]const u8 = undefined;
+                var sorted_vals: [kvs_list.len]V = undefined;
 
-                self.initSortedKVs(kvs_list, &keys, &vals);
-                const final_keys = keys;
-                const final_vals = vals;
-                self.sorted_kvs = &.{
+                self.initSortedKVs(kvs_list, &sorted_keys, &sorted_vals);
+                const final_keys = sorted_keys;
+                const final_vals = sorted_vals;
+                self.kvs = &.{
                     .keys = &final_keys,
                     .values = &final_vals,
-                    .len = kvs_list.len,
+                    .len = @intCast(kvs_list.len),
                 };
 
                 var len_indexes: [self.max_len + 1]u32 = undefined;
                 self.initLenIndexes(&len_indexes);
                 const final_len_indexes = len_indexes;
                 self.len_indexes = &final_len_indexes;
+                self.len_indexes_len = @intCast(len_indexes.len);
                 return self;
             }
         }
 
         /// Returns a map backed by memory allocated with `allocator`.
         ///
-        /// Handles `kvs_list` the same way as `init()`.
-        pub fn initRuntime(kvs_list: anytype, allocator: mem.Allocator) !Self {
+        /// Handles `kvs_list` the same way as `initComptime()`.
+        pub fn init(kvs_list: anytype, allocator: mem.Allocator) !Self {
             var self = Self{};
             if (kvs_list.len == 0)
                 return self;
 
             const sorted_keys = try allocator.alloc([]const u8, kvs_list.len);
+            errdefer allocator.free(sorted_keys);
             const sorted_vals = try allocator.alloc(V, kvs_list.len);
-            const sorted_kvs = try allocator.create(KVs);
-            errdefer {
-                allocator.free(sorted_keys);
-                allocator.free(sorted_vals);
-                allocator.destroy(sorted_kvs);
-            }
+            errdefer allocator.free(sorted_vals);
+            const kvs = try allocator.create(KVs);
+            errdefer allocator.destroy(kvs);
+
             self.initSortedKVs(kvs_list, sorted_keys, sorted_vals);
-            sorted_kvs.* = .{
+            kvs.* = .{
                 .keys = sorted_keys.ptr,
                 .values = sorted_vals.ptr,
                 .len = kvs_list.len,
             };
-            self.sorted_kvs = sorted_kvs;
+            self.kvs = kvs;
 
             const len_indexes = try allocator.alloc(u32, self.max_len + 1);
             self.initLenIndexes(len_indexes);
@@ -126,12 +126,12 @@ pub fn ComptimeStringMapWithEql(
             return self;
         }
 
-        /// this method should only be used with initRuntime() and not with init().
+        /// this method should only be used with init() and not with initComptime().
         pub fn deinit(self: Self, allocator: mem.Allocator) void {
             allocator.free(self.len_indexes[0..self.len_indexes_len]);
-            allocator.free(self.sorted_kvs.keys[0..self.sorted_kvs.len]);
-            allocator.free(self.sorted_kvs.values[0..self.sorted_kvs.len]);
-            allocator.destroy(self.sorted_kvs);
+            allocator.free(self.kvs.keys[0..self.kvs.len]);
+            allocator.free(self.kvs.values[0..self.kvs.len]);
+            allocator.destroy(self.kvs);
         }
 
         const SortContext = struct {
@@ -171,7 +171,7 @@ pub fn ComptimeStringMapWithEql(
             var i: u32 = 0;
             while (len <= self.max_len) : (len += 1) {
                 // find the first keyword len == len
-                while (len > self.sorted_kvs.keys[i].len) {
+                while (len > self.kvs.keys[i].len) {
                     i += 1;
                 }
                 len_indexes[len] = i;
@@ -185,14 +185,14 @@ pub fn ComptimeStringMapWithEql(
 
         /// Returns the value for the key if any, else null.
         pub fn get(self: Self, str: []const u8) ?V {
-            if (self.sorted_kvs.len == 0)
+            if (self.kvs.len == 0)
                 return null;
 
-            return self.sorted_kvs.values[self.getIndex(str) orelse return null];
+            return self.kvs.values[self.getIndex(str) orelse return null];
         }
 
         pub fn getIndex(self: Self, str: []const u8) ?usize {
-            const kvs = self.sorted_kvs.*;
+            const kvs = self.kvs.*;
             if (kvs.len == 0)
                 return null;
 
@@ -212,20 +212,21 @@ pub fn ComptimeStringMapWithEql(
             }
         }
 
-        /// Returns the longest partially matching key, value pair for `str`
-        /// else null.  A partial match means that `str` starts with key.
-        pub fn getPartial(self: Self, str: []const u8) ?KV {
-            if (self.sorted_kvs.len == 0)
+        /// Returns the longest key, value pair where key is a prefix of `str`
+        /// else null.
+        pub fn getLongestPrefix(self: Self, str: []const u8) ?KV {
+            if (self.kvs.len == 0)
                 return null;
-            const i = self.getIndexPartial(str) orelse return null;
+            const i = self.getLongestPrefixIndex(str) orelse return null;
+            const kvs = self.kvs.*;
             return .{
-                .key = self.sorted_kvs.keys[i],
-                .value = self.sorted_kvs.values[i],
+                .key = kvs.keys[i],
+                .value = kvs.values[i],
             };
         }
 
-        pub fn getIndexPartial(self: Self, str: []const u8) ?usize {
-            if (self.sorted_kvs.len == 0)
+        pub fn getLongestPrefixIndex(self: Self, str: []const u8) ?usize {
+            if (self.kvs.len == 0)
                 return null;
 
             if (str.len < self.min_len)
@@ -238,15 +239,27 @@ pub fn ComptimeStringMapWithEql(
             }
             return null;
         }
+
+        pub fn keys(self: Self) []const []const u8 {
+            const kvs = self.kvs.*;
+            return kvs.keys[0..kvs.len];
+        }
+
+        pub fn values(self: Self) []const V {
+            const kvs = self.kvs.*;
+            return kvs.values[0..kvs.len];
+        }
     };
 }
 
 const TestEnum = enum { A, B, C, D, E };
-const TestMap = ComptimeStringMap(TestEnum);
+const TestMap = StaticStringMap(TestEnum);
 const TestKV = struct { []const u8, TestEnum };
-const TestMapVoid = ComptimeStringMap(void);
+const TestMapVoid = StaticStringMap(void);
 const TestKVVoid = struct { []const u8 };
-const talloc = std.testing.allocator;
+const TestMapWithEql = StaticStringMapWithEql(TestEnum, eqlAsciiIgnoreCase);
+const testing = std.testing;
+const test_alloc = testing.allocator;
 
 test "list literal of list literals" {
     const slice = [_]TestKV{
@@ -256,16 +269,17 @@ test "list literal of list literals" {
         .{ "incommon", .C },
         .{ "samelen", .E },
     };
-    const map = ComptimeStringMap(TestEnum).init(slice);
+    const map = TestMap.initComptime(slice);
     try testMap(map);
     // Default comparison is case sensitive
-    try std.testing.expect(null == map.get("NOTHING"));
+    try testing.expect(null == map.get("NOTHING"));
 
-    const mapr = try ComptimeStringMap(TestEnum).initRuntime(slice, talloc);
-    defer mapr.deinit(talloc);
-    try testMap(mapr);
+    // runtime init(), deinit()
+    const map_rt = try TestMap.init(slice, test_alloc);
+    defer map_rt.deinit(test_alloc);
+    try testMap(map_rt);
     // Default comparison is case sensitive
-    try std.testing.expect(null == mapr.get("NOTHING"));
+    try testing.expect(null == map_rt.get("NOTHING"));
 }
 
 test "array of structs" {
@@ -277,11 +291,7 @@ test "array of structs" {
         .{ "samelen", .E },
     };
 
-    try testMap(ComptimeStringMap(TestEnum).init(slice));
-
-    const map = try ComptimeStringMap(TestEnum).initRuntime(slice, talloc);
-    defer map.deinit(talloc);
-    try testMap(map);
+    try testMap(TestMap.initComptime(slice));
 }
 
 test "slice of structs" {
@@ -293,25 +303,21 @@ test "slice of structs" {
         .{ "samelen", .E },
     };
 
-    try testMap(ComptimeStringMap(TestEnum).init(slice));
-
-    const map = try ComptimeStringMap(TestEnum).initRuntime(slice, talloc);
-    defer map.deinit(talloc);
-    try testMap(map);
+    try testMap(TestMap.initComptime(slice));
 }
 
 fn testMap(map: anytype) !void {
-    try std.testing.expectEqual(TestEnum.A, map.get("have").?);
-    try std.testing.expectEqual(TestEnum.B, map.get("nothing").?);
-    try std.testing.expect(null == map.get("missing"));
-    try std.testing.expectEqual(TestEnum.D, map.get("these").?);
-    try std.testing.expectEqual(TestEnum.E, map.get("samelen").?);
+    try testing.expectEqual(TestEnum.A, map.get("have").?);
+    try testing.expectEqual(TestEnum.B, map.get("nothing").?);
+    try testing.expect(null == map.get("missing"));
+    try testing.expectEqual(TestEnum.D, map.get("these").?);
+    try testing.expectEqual(TestEnum.E, map.get("samelen").?);
 
-    try std.testing.expect(!map.has("missing"));
-    try std.testing.expect(map.has("these"));
+    try testing.expect(!map.has("missing"));
+    try testing.expect(map.has("these"));
 
-    try std.testing.expect(null == map.get(""));
-    try std.testing.expect(null == map.get("averylongstringthathasnomatches"));
+    try testing.expect(null == map.get(""));
+    try testing.expect(null == map.get("averylongstringthathasnomatches"));
 }
 
 test "void value type, slice of structs" {
@@ -322,15 +328,10 @@ test "void value type, slice of structs" {
         .{"incommon"},
         .{"samelen"},
     };
-    const map = ComptimeStringMap(void).init(slice);
+    const map = TestMapVoid.initComptime(slice);
     try testSet(map);
     // Default comparison is case sensitive
-    try std.testing.expect(null == map.get("NOTHING"));
-
-    const mapr = try ComptimeStringMap(void).initRuntime(slice, talloc);
-    defer mapr.deinit(talloc);
-    try testSet(mapr);
-    try std.testing.expect(null == mapr.get("NOTHING"));
+    try testing.expect(null == map.get("NOTHING"));
 }
 
 test "void value type, list literal of list literals" {
@@ -342,36 +343,32 @@ test "void value type, list literal of list literals" {
         .{"samelen"},
     };
 
-    try testSet(ComptimeStringMap(void).init(slice));
-
-    const map = try ComptimeStringMap(void).initRuntime(slice, talloc);
-    defer map.deinit(talloc);
-    try testSet(map);
+    try testSet(TestMapVoid.initComptime(slice));
 }
 
 fn testSet(map: TestMapVoid) !void {
-    try std.testing.expectEqual({}, map.get("have").?);
-    try std.testing.expectEqual({}, map.get("nothing").?);
-    try std.testing.expect(null == map.get("missing"));
-    try std.testing.expectEqual({}, map.get("these").?);
-    try std.testing.expectEqual({}, map.get("samelen").?);
+    try testing.expectEqual({}, map.get("have").?);
+    try testing.expectEqual({}, map.get("nothing").?);
+    try testing.expect(null == map.get("missing"));
+    try testing.expectEqual({}, map.get("these").?);
+    try testing.expectEqual({}, map.get("samelen").?);
 
-    try std.testing.expect(!map.has("missing"));
-    try std.testing.expect(map.has("these"));
+    try testing.expect(!map.has("missing"));
+    try testing.expect(map.has("these"));
 
-    try std.testing.expect(null == map.get(""));
-    try std.testing.expect(null == map.get("averylongstringthathasnomatches"));
+    try testing.expect(null == map.get(""));
+    try testing.expect(null == map.get("averylongstringthathasnomatches"));
 }
 
-fn testComptimeStringMapWithEql(map: ComptimeStringMapWithEql(TestEnum, eqlAsciiIgnoreCase)) !void {
+fn testStaticStringMapWithEql(map: TestMapWithEql) !void {
     try testMap(map);
-    try std.testing.expectEqual(TestEnum.A, map.get("HAVE").?);
-    try std.testing.expectEqual(TestEnum.E, map.get("SameLen").?);
-    try std.testing.expect(null == map.get("SameLength"));
-    try std.testing.expect(map.has("ThESe"));
+    try testing.expectEqual(TestEnum.A, map.get("HAVE").?);
+    try testing.expectEqual(TestEnum.E, map.get("SameLen").?);
+    try testing.expect(null == map.get("SameLength"));
+    try testing.expect(map.has("ThESe"));
 }
 
-test "ComptimeStringMapWithEql" {
+test "StaticStringMapWithEql" {
     const slice = [_]TestKV{
         .{ "these", .D },
         .{ "have", .A },
@@ -380,35 +377,21 @@ test "ComptimeStringMapWithEql" {
         .{ "samelen", .E },
     };
 
-    try testComptimeStringMapWithEql(ComptimeStringMapWithEql(TestEnum, eqlAsciiIgnoreCase).init(slice));
-
-    const map = try ComptimeStringMapWithEql(TestEnum, eqlAsciiIgnoreCase).initRuntime(slice, talloc);
-    try testComptimeStringMapWithEql(map);
-    defer map.deinit(talloc);
+    try testStaticStringMapWithEql(TestMapWithEql.initComptime(slice));
 }
 
 test "empty" {
-    const m1 = ComptimeStringMap(usize).init(.{});
-    try std.testing.expect(null == m1.get("anything"));
+    const m1 = StaticStringMap(usize).initComptime(.{});
+    try testing.expect(null == m1.get("anything"));
 
-    const m2 = ComptimeStringMapWithEql(usize, eqlAsciiIgnoreCase).init(.{});
-    try std.testing.expect(null == m2.get("anything"));
+    const m2 = StaticStringMapWithEql(usize, eqlAsciiIgnoreCase).initComptime(.{});
+    try testing.expect(null == m2.get("anything"));
 
-    const m3 = try ComptimeStringMap(usize).initRuntime(.{}, talloc);
-    try std.testing.expect(null == m3.get("anything"));
+    const m3 = try StaticStringMap(usize).init(.{}, test_alloc);
+    try testing.expect(null == m3.get("anything"));
 
-    const m4 = try ComptimeStringMapWithEql(usize, eqlAsciiIgnoreCase).initRuntime(.{}, talloc);
-    try std.testing.expect(null == m4.get("anything"));
-}
-
-fn testRedundantEntries(map: TestMap) !void {
-    // No promises about which one you get:
-    try std.testing.expect(null != map.get("redundant"));
-
-    // Default map is not case sensitive:
-    try std.testing.expect(null == map.get("REDUNDANT"));
-
-    try std.testing.expectEqual(TestEnum.A, map.get("theNeedle").?);
+    const m4 = try StaticStringMapWithEql(usize, eqlAsciiIgnoreCase).init(.{}, test_alloc);
+    try testing.expect(null == m4.get("anything"));
 }
 
 test "redundant entries" {
@@ -419,20 +402,17 @@ test "redundant entries" {
         .{ "re" ++ "dundant", .C },
         .{ "redun" ++ "dant", .E },
     };
+    const map = TestMap.initComptime(slice);
 
-    try testRedundantEntries(ComptimeStringMap(TestEnum).init(slice));
+    // No promises about which one you get:
+    try testing.expect(null != map.get("redundant"));
 
-    const map = try ComptimeStringMap(TestEnum).initRuntime(slice, talloc);
-    defer map.deinit(talloc);
-    try testRedundantEntries(map);
+    // Default map is not case sensitive:
+    try testing.expect(null == map.get("REDUNDANT"));
+
+    try testing.expectEqual(TestEnum.A, map.get("theNeedle").?);
 }
 
-fn testRedundantInsensitive(map: ComptimeStringMapWithEql(TestEnum, eqlAsciiIgnoreCase)) !void {
-    // No promises about which result you'll get ...
-    try std.testing.expect(null != map.get("REDUNDANT"));
-    try std.testing.expect(null != map.get("ReDuNdAnT"));
-    try std.testing.expectEqual(TestEnum.A, map.get("theNeedle").?);
-}
 test "redundant insensitive" {
     const slice = [_]TestKV{
         .{ "redundant", .D },
@@ -442,15 +422,16 @@ test "redundant insensitive" {
         .{ "redun" ++ "DANT", .E },
     };
 
-    try testRedundantInsensitive(ComptimeStringMapWithEql(TestEnum, eqlAsciiIgnoreCase).init(slice));
+    const map = TestMapWithEql.initComptime(slice);
 
-    const map = try ComptimeStringMapWithEql(TestEnum, eqlAsciiIgnoreCase).initRuntime(slice, talloc);
-    defer map.deinit(talloc);
-    try testRedundantInsensitive(map);
+    // No promises about which result you'll get ...
+    try testing.expect(null != map.get("REDUNDANT"));
+    try testing.expect(null != map.get("ReDuNdAnT"));
+    try testing.expectEqual(TestEnum.A, map.get("theNeedle").?);
 }
 
 test "comptime-only value" {
-    const map = ComptimeStringMap(type).init(.{
+    const map = StaticStringMap(type).initComptime(.{
         .{ "a", struct {
             pub const foo = 1;
         } },
@@ -462,19 +443,13 @@ test "comptime-only value" {
         } },
     });
 
-    try std.testing.expect(map.get("a").?.foo == 1);
-    try std.testing.expect(map.get("b").?.foo == 2);
-    try std.testing.expect(map.get("c").?.foo == 3);
-    try std.testing.expect(map.get("d") == null);
+    try testing.expect(map.get("a").?.foo == 1);
+    try testing.expect(map.get("b").?.foo == 2);
+    try testing.expect(map.get("c").?.foo == 3);
+    try testing.expect(map.get("d") == null);
 }
 
-fn testGetPartial(map: TestMap) !void {
-    try std.testing.expectEqual(null, map.getPartial(""));
-    try std.testing.expectEqual(null, map.getPartial("bar"));
-    try std.testing.expectEqualStrings("aaaa", map.getPartial("aaaabar").?.key);
-    try std.testing.expectEqualStrings("aaa", map.getPartial("aaabar").?.key);
-}
-test "getPartial" {
+test "getLongestPrefix" {
     const slice = [_]TestKV{
         .{ "a", .A },
         .{ "aa", .B },
@@ -482,34 +457,16 @@ test "getPartial" {
         .{ "aaaa", .D },
     };
 
-    try testGetPartial(ComptimeStringMap(TestEnum).init(slice));
+    const map = TestMap.initComptime(slice);
 
-    const map = try ComptimeStringMap(TestEnum).initRuntime(slice, talloc);
-    defer map.deinit(talloc);
-    try testGetPartial(map);
+    try testing.expectEqual(null, map.getLongestPrefix(""));
+    try testing.expectEqual(null, map.getLongestPrefix("bar"));
+    try testing.expectEqualStrings("aaaa", map.getLongestPrefix("aaaabar").?.key);
+    try testing.expectEqualStrings("aaa", map.getLongestPrefix("aaabar").?.key);
 }
 
-fn testGetPartial2(map: ComptimeStringMap(usize)) !void {
-    try std.testing.expectEqual(1, map.get("one"));
-    try std.testing.expectEqual(null, map.get("o"));
-    try std.testing.expectEqual(null, map.get("onexxx"));
-    try std.testing.expectEqual(9, map.get("nine"));
-    try std.testing.expectEqual(null, map.get("n"));
-    try std.testing.expectEqual(null, map.get("ninexxx"));
-    try std.testing.expectEqual(null, map.get("xxx"));
-
-    try std.testing.expectEqual(1, map.getPartial("one").?.value);
-    try std.testing.expectEqual(1, map.getPartial("onexxx").?.value);
-    try std.testing.expectEqual(null, map.getPartial("o"));
-    try std.testing.expectEqual(null, map.getPartial("on"));
-    try std.testing.expectEqual(9, map.getPartial("nine").?.value);
-    try std.testing.expectEqual(9, map.getPartial("ninexxx").?.value);
-    try std.testing.expectEqual(null, map.getPartial("n"));
-    try std.testing.expectEqual(null, map.getPartial("xxx"));
-}
-
-test "getPartial2" {
-    const slice = [_]struct { []const u8, usize }{
+test "getLongestPrefix2" {
+    const slice = [_]struct { []const u8, u8 }{
         .{ "one", 1 },
         .{ "two", 2 },
         .{ "three", 3 },
@@ -520,9 +477,26 @@ test "getPartial2" {
         .{ "eight", 8 },
         .{ "nine", 9 },
     };
-    try testGetPartial2(ComptimeStringMap(usize).init(slice));
+    const map = StaticStringMap(u8).initComptime(slice);
 
-    const map = try ComptimeStringMap(usize).initRuntime(slice, talloc);
-    defer map.deinit(talloc);
-    try testGetPartial2(map);
+    try testing.expectEqual(1, map.get("one"));
+    try testing.expectEqual(null, map.get("o"));
+    try testing.expectEqual(null, map.get("onexxx"));
+    try testing.expectEqual(9, map.get("nine"));
+    try testing.expectEqual(null, map.get("n"));
+    try testing.expectEqual(null, map.get("ninexxx"));
+    try testing.expectEqual(null, map.get("xxx"));
+
+    try testing.expectEqual(1, map.getLongestPrefix("one").?.value);
+    try testing.expectEqual(1, map.getLongestPrefix("onexxx").?.value);
+    try testing.expectEqual(null, map.getLongestPrefix("o"));
+    try testing.expectEqual(null, map.getLongestPrefix("on"));
+    try testing.expectEqual(9, map.getLongestPrefix("nine").?.value);
+    try testing.expectEqual(9, map.getLongestPrefix("ninexxx").?.value);
+    try testing.expectEqual(null, map.getLongestPrefix("n"));
+    try testing.expectEqual(null, map.getLongestPrefix("xxx"));
+}
+
+test "long kvs_list doesn't exceed @setEvalBranchQuota" {
+    _ = TestMapVoid.initComptime([1]TestKVVoid{.{"x"}} ** 1_000);
 }
