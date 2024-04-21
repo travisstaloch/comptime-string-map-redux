@@ -15,6 +15,8 @@ function bench() {
   $poop -d 3000 "zig-out/bin/bench-std" "zig-out/bin/bench-rev"
 }
 
+zig build bench -Dmode=validate 
+
 bench Debug
 bench ReleaseSafe
 bench ReleaseSmall

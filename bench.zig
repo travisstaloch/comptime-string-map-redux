@@ -8,7 +8,7 @@ const kvs_len = 400;
 pub const Mode = enum {
     std,
     rev,
-    // validate,
+    validate,
 };
 
 const kvs_and_indexes = blk: {
@@ -85,10 +85,18 @@ fn bench(comptime mode: Mode, comptime num_kvs: usize, num_iters: usize) void {
 
 pub fn main() void {
     // for (kvs) |kv| std.debug.print("{s}:{}\n", .{ kv[0], kv[1] });
+    // std.debug.print("{any}\n", .{indexes});
 
     const mode = comptime std.enums.nameCast(Mode, @import("build_options").mode);
-
-    inline for (.{ 5, 10, 20, 60, 100, 200 }) |num_kvs| {
-        bench(mode, num_kvs, @import("build_options").num_iters);
+    switch (mode) {
+        .validate => inline for (.{ 5, 10, 20, 60, 100, 200 }) |num_kvs| {
+            validate(num_kvs, @import("build_options").num_iters) catch |e| {
+                std.log.err("{}", .{e});
+                std.process.exit(1);
+            };
+        },
+        else => inline for (.{ 5, 10, 20, 60, 100, 200 }) |num_kvs| {
+            bench(mode, num_kvs, @import("build_options").num_iters);
+        },
     }
 }
